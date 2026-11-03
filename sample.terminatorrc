@@ -1,0 +1,29 @@
+# ~/.terminatorrc - Custom hotkey configuration for Terminator
+# Format: action_name = Key_Combination
+#
+# Supported actions:
+#   move_left, move_right, line_start, line_end,
+#   history_prev, history_next, delete_to_start, delete_to_end,
+#   delete_prev_word, clear_screen, exit_tab, copy, paste,
+#   new_tab, close_tab, next_tab, prev_tab
+#
+# Modifiers: Ctrl, Shift, Alt
+# Keys: A-Z, Left, Right, Up, Down, BackSpace, Tab, Return, etc.
+
+move_left = Left
+move_right = Right
+line_start = Ctrl+A
+line_end = Ctrl+E
+history_prev = Up
+history_next = Down
+delete_to_start = Ctrl+U
+delete_to_end = Ctrl+K
+delete_prev_word = Ctrl+W
+clear_screen = Ctrl+L
+exit_tab = Ctrl+D
+copy = Ctrl+Shift+C
+paste = Ctrl+Shift+V
+new_tab = Ctrl+Shift+T
+close_tab = Ctrl+Shift+W
+next_tab = Ctrl+Tab
+prev_tab = Ctrl+Shift+Tab
