@@ -186,3 +186,145 @@ Inspect history across tabs:
 user@terminator> history
 ```
 
+---
+
+## 8. Architecture at a Glance
+
+The application has a graphical front end, one shell engine per tab, and shared history.
+The selected execution mode changes how each tab engine is hosted.
+
+```mermaid
+flowchart TB
+    User[Keyboard and mouse] --> GUI[X11 TerminalGUI]
+    GUI --> Tabs[Tab collection]
+    Tabs --> TabIO[Tab input and output pipes]
+    TabIO --> Engine[Shell engine per tab]
+    Engine --> Parser[Parser and expansion]
+    Parser --> Exec[Built-ins or external process]
+    Exec --> Jobs[Job manager and process groups]
+    Engine <--> History[Shared history segment]
+    History --> Disk[~/.bash_history]
+    GUI --> Config[~/.terminatorrc]
+```
+
+### Execution mode flow
+
+```text
+Thread mode
+  X11 GUI process
+    ├── tab 1 worker thread ── shell state and command children
+    ├── tab 2 worker thread ── shell state and command children
+    └── shared history protected by process-shared semaphore
+
+Process mode
+  X11 GUI parent
+    ├── tab 1 worker process ── shell state and command children
+    ├── tab 2 worker process ── shell state and command children
+    └── shared history mapped by each process and semaphore protected
+```
+
+Each tab keeps its own working directory, input line, scrollback, and shell jobs.
+The GUI owns the X11 window and chooses which tab receives keyboard input.
+The shell sends output and title updates to the GUI through its tab connection.
+
+## 9. Repository Map
+
+| Path | Responsibility |
+| --- | --- |
+| `src/main.cpp` | Parses startup options and launches the GUI. |
+| `src/gui.cpp`, `src/gui.hpp` | X11 window, event loop, rendering, hotkeys, and tab routing. |
+| `src/tab.cpp`, `src/tab.hpp` | Per-tab worker setup, pipe endpoints, and tab state. |
+| `src/shell.cpp`, `src/shell.hpp` | Shell command execution and built-in dispatch. |
+| `src/parser.cpp`, `src/parser.hpp` | Tokenization, quoting, expansion, and command structure. |
+| `src/jobs.cpp`, `src/jobs.hpp` | Background and stopped job tracking. |
+| `src/history.cpp`, `src/history.hpp` | Shared and persistent command history. |
+| `src/autocomplete.cpp`, `src/autocomplete.hpp` | Command and path completion. |
+| `src/multiwatch.cpp`, `src/multiwatch.hpp` | Concurrent command monitoring. |
+| `src/config.cpp`, `src/config.hpp` | Hotkey configuration loading and validation. |
+| `tests/` | Unit and comprehensive test programs. |
+| `test_demo.sh` | Demonstration script for the shell features. |
+| `Makefile` | Build, test, and cleanup targets. |
+
+## 10. Data and Control Flow
+
+### From key press to command
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant X as X11 server
+    participant G as TerminalGUI
+    participant T as Active Tab
+    participant S as Shell engine
+    participant P as Parser / executor
+    User->>X: Type characters and press Enter
+    X->>G: KeyPress events
+    G->>G: Edit input buffer and redraw
+    G->>T: Write completed command to tab input pipe
+    T->>S: Read command line
+    S->>P: Parse and execute
+    P-->>S: Command output and status
+    S-->>T: Write output to tab output pipe
+    T-->>G: Pipe becomes readable
+    G->>X: Draw output and updated prompt
+```
+
+### Output readiness
+
+The GUI waits for X11 events and tab output with `poll()`.
+This lets the window respond to input while shell output arrives asynchronously.
+When a tab pipe closes, the GUI can notice the hangup and remove the finished tab.
+
+## 11. Build and Runtime Notes
+
+The Makefile compiles the C++17 translation units under `src/` and links Xlib,
+POSIX threads, and the realtime library. `make test` builds the test runner from
+the implementation modules without the GUI or application entry point.
+
+Typical development cycle:
+
+```text
+Edit C++ source or headers
+        │
+        ▼
+      make ───────► terminator executable
+        │
+        ├── make test ──► test_runner executes, then is removed
+        │
+        └── make clean ─► remove object files and generated binaries
+```
+
+The `sample.terminatorrc` file demonstrates configurable editing keys.
+Copy the desired settings to `~/.terminatorrc` to use them for your account.
+The configuration is loaded when the application initializes.
+
+## 12. Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| `XOpenDisplay` cannot connect | Start Terminator in a graphical X11 session and check `DISPLAY`. |
+| Xlib header is missing | Install the platform's X11 development package, such as `libx11-dev`. |
+| Linker cannot find X11 | Confirm the X11 development libraries are installed. |
+| A command is not found | Check spelling and whether its executable directory is in `PATH`. |
+| A script does not run | Check its path, permissions, and supported syntax subset. |
+| Hotkey settings are ignored | Check `~/.terminatorrc` syntax and look for conflicting bindings. |
+| A tab appears stuck | Inspect whether its foreground child is waiting for input or still running. |
+
+## 13. Scope and Extension Points
+
+The project is structured so interface, shell, and support features can evolve
+independently. New X11 interactions belong in the GUI event handlers; shell
+syntax belongs in the parser and executor; stateful shell behavior belongs in
+the shell or job manager; and persistent cross-tab command data belongs in the
+history manager.
+
+Potential extensions that fit the current boundaries include richer font
+rendering, terminal escape-sequence support, more shell grammar, and additional
+completion sources. These would require coordinated updates to the relevant
+module and its documentation or tests.
+
+The current design intentionally uses pipes for tab communication and command
+I/O. As a result, applications expecting a full pseudo-terminal device do not
+receive all terminal control behavior. See the limitations section above before
+using Terminator for interactive full-screen programs.
+

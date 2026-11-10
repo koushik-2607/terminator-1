@@ -165,3 +165,222 @@ External commands run in a child created with `fork()` + `execvp()`. The shell w
 - File completion scans the active tab's working directory, expands the common prefix, and prints numbered alternatives when ambiguous. The GUI keeps the untouched suffix of the input line and accepts a numbered choice.
 - Script entry points (`source`, `bash file`, and `./file.sh`) use the internal command executor. The interpreter validates balanced `if`/`fi` blocks before execution, then handles nested conditionals, assignments, positional parameters, file/directory and comparison tests, and `exit`. The parser/executor supplies command substitutions, pipes, and redirections. Loops and functions are outside the required subset.
 
+## 10. Module Boundaries and Ownership
+
+The implementation is split into modules with narrow responsibilities. The GUI
+owns the X11 resources and tab objects; each tab owns its input/output channel
+and worker lifecycle; shell code owns command state and dispatch; helper modules
+provide parsing, jobs, history, completion, configuration, and multiWatch.
+
+```mermaid
+flowchart LR
+    Main[main.cpp] --> GUI[gui.cpp / TerminalGUI]
+    GUI --> Tab[tab.cpp / Tab]
+    Tab --> Shell[shell.cpp / Shell]
+    Shell --> Parser[parser.cpp]
+    Shell --> Jobs[jobs.cpp]
+    Shell --> Watch[multiwatch.cpp]
+    Shell --> Complete[autocomplete.cpp]
+    GUI --> History[history.cpp]
+    Shell --> History
+    GUI --> Config[config.cpp]
+```
+
+The arrows show the principal dependency and call direction, not every helper
+function call. Shared declarations and common constants live in the headers
+under `src/`; implementation details remain in the corresponding `.cpp` files.
+
+| Module | State primarily managed | Main collaborators |
+| --- | --- | --- |
+| `main` | Startup mode | `TerminalGUI` |
+| `gui` | Window, active tab, drawing and input state | `Tab`, `HistoryManager`, `HotkeyConfig` |
+| `tab` | Per-tab worker and pipe endpoints | `Shell` |
+| `shell` | Working directory, environment, status, command dispatch | Parser, jobs, history, multiWatch |
+| `parser` | Parsed command representation and expansions | Shell execution path |
+| `jobs` | Process groups and job state | Shell process control |
+| `history` | Shared-memory records and persistence | GUI and shell |
+| `autocomplete` | Candidate discovery and common prefix | GUI input editing |
+| `config` | Key-to-action bindings | GUI event dispatch |
+| `multiwatch` | Watched commands, pipes, and timers | Shell execution |
+
+## 11. Tab Lifecycle
+
+Creating and closing a tab crosses the GUI and worker boundary. The GUI retains
+the tab object and uses its descriptors to route input and collect output.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Constructed: create tab
+    Constructed --> Running: start thread or fork worker
+    Running --> Selected: user selects tab
+    Selected --> Running: another tab selected
+    Running --> Closing: close request or worker exit
+    Selected --> Closing: close active tab
+    Closing --> Reaped: stop / reap worker and close descriptors
+    Reaped --> [*]
+```
+
+For thread mode, the worker shares the GUI process address space. For process
+mode, the worker has a separate address space and communicates over pipes.
+Both modes expose the same conceptual tab interface to the GUI.
+
+### Pipe directions
+
+```text
+GUI input buffer ──write──► tab command input ──read──► shell worker
+GUI screen buffer ◄─read─── tab output pipe   ◄─write── shell worker
+```
+
+The GUI drains output when descriptors are readable. Closing the tab must also
+stop or join/reap its worker as appropriate, and close both sides of its IPC
+descriptors so that no stale endpoint keeps a pipe alive.
+
+## 12. Command Processing Stages
+
+The command path proceeds from a completed input line through parsing and
+execution. A single command may branch into built-in handling or process setup.
+
+```mermaid
+flowchart TD
+    Input[Completed input line] --> Continue{More input required?}
+    Continue -->|yes| Prompt[Continuation prompt]
+    Prompt --> Input
+    Continue -->|no| Expand[Quote-aware parsing and expansion]
+    Expand --> Empty{Empty command?}
+    Empty -->|yes| Ready[Return to prompt]
+    Empty -->|no| Builtin{Stateful built-in?}
+    Builtin -->|yes| RunBuiltin[Run in shell worker]
+    Builtin -->|no| Plan[Prepare redirection and pipeline]
+    Plan --> Fork[Create child process group]
+    Fork --> Wait{Foreground?}
+    Wait -->|yes| Waitpid[Wait and update status]
+    Wait -->|no| Job[Register background job]
+    Waitpid --> Ready
+    Job --> Ready
+    RunBuiltin --> Ready
+```
+
+Built-ins that change shell state, such as `cd`, must run in the shell worker so
+their effects persist in that tab. External commands execute in child processes.
+The last command's result updates the shell status used by `$?`.
+
+## 13. Pipeline and Redirection Descriptor Map
+
+For a pipeline of three commands, the parent creates two pipes. Each child keeps
+only the descriptors it needs after `dup2()` and closes unused pipe ends.
+
+```text
+               pipe 0                         pipe 1
+          ┌──────────────┐                ┌──────────────┐
+stdin ──► [ command A ] ─┼──► [ command B ] ─┼──► [ command C ] ──► stdout
+          └──────────────┘                └──────────────┘
+                  │                               │
+             close unused                    close unused
+```
+
+Input and output redirections are applied to the relevant command descriptors.
+When a redirection replaces a pipeline endpoint, normal descriptor setup rules
+determine which source feeds the command. Descriptor closure is important:
+an unused write end can prevent a downstream reader from seeing end-of-file.
+
+## 14. Event and Signal Flow
+
+The graphical event loop watches the X connection and tab output descriptors.
+The GUI translates terminal control keys into shell control messages or process
+signals for the active foreground group.
+
+```mermaid
+flowchart LR
+    XEvents[X11 events] --> Poll[poll-based GUI loop]
+    TabFDs[Tab output descriptors] --> Poll
+    Poll --> Dispatch[Event and output dispatch]
+    Dispatch --> Draw[Update buffers and redraw]
+    Key[Ctrl+C / Ctrl+Z] --> GUIControl[GUI control handling]
+    GUIControl --> Signal[Signal active process group]
+    Signal --> Jobs[Shell waits and updates job state]
+```
+
+The GUI remains responsible for the window event loop. Process status changes
+are observed with nonblocking wait operations in the shell/job-management path.
+Foreground waiting and background status checks must not consume the same child
+status twice; this is why job operations are centralized around process IDs and
+process groups.
+
+## 15. Shared History Lifecycle
+
+Shared history makes commands available across tabs and, in process mode, across
+worker processes. The semaphore guards shared memory updates and reads.
+
+```mermaid
+sequenceDiagram
+    participant TabA as Tab A shell
+    participant Lock as Process-shared semaphore
+    participant Mem as Shared history mapping
+    participant File as ~/.bash_history
+    participant TabB as Tab B shell
+    TabA->>Lock: wait
+    TabA->>Mem: append command and update bounded records
+    TabA->>File: persist history
+    TabA->>Lock: post
+    TabB->>Lock: wait
+    TabB->>Mem: read history snapshot
+    TabB->>Lock: post
+```
+
+The fixed limits in `common.hpp` bound shared-memory usage. A reader should copy
+the needed records while holding the lock and then format or display them after
+releasing it, keeping the critical section short.
+
+## 16. Failure Handling and Resource Rules
+
+System calls can fail because of unavailable resources, invalid paths, child
+process errors, or a missing X server. The surrounding module should report a
+useful error and preserve cleanup paths for descriptors and children.
+
+| Boundary | Failure example | Expected handling |
+| --- | --- | --- |
+| Startup | No usable X display | Report initialization failure and exit cleanly. |
+| Tab creation | Pipe, fork, or thread creation fails | Avoid publishing a half-initialized tab. |
+| Command launch | `fork()` or `execvp()` fails | Report the error and return a nonzero status. |
+| Redirection | File cannot be opened | Report the path error and avoid running with unintended streams. |
+| Child lifecycle | Child exits or stops | Reap status and update the associated job. |
+| Tab shutdown | Worker exits or user closes tab | Close endpoints and release worker resources. |
+| History | Shared-memory setup fails | Handle initialization failure without invalid mapping access. |
+
+Resource ownership should remain local: GUI resources are released by the GUI,
+tab descriptors by the tab lifecycle, and child statuses by the shell/job code.
+This makes failure cleanup easier to reason about than relying on process exit
+to reclaim every resource.
+
+## 17. Build and Verification Structure
+
+The `Makefile` compiles each implementation file using C++17 and links the
+application with X11, pthreads, and `rt`. The test target links the reusable
+implementation modules while excluding `main.cpp` and `gui.cpp`.
+
+```text
+src/*.cpp ──compile──► src/*.o ──link with X11/pthread/rt──► terminator
+                              └──test sources + non-GUI objects──► test_runner
+```
+
+`make clean` removes generated object files and executables. Tests are organized
+into unit-level and comprehensive suites under `tests/`; the demo script gives
+a practical path through representative shell commands.
+
+## 18. Design Constraints and Future Work
+
+The current renderer uses Xlib core drawing and pipes rather than a pseudoterminal.
+Those choices keep the implementation focused on the project requirements, but
+they constrain compatibility with full-screen terminal programs and advanced
+font rendering.
+
+Any extension should preserve the separation between presentation and command
+execution. For example, a future pseudo-terminal layer would change tab I/O and
+process setup, while leaving tab selection and much of the X11 drawing code
+independent. Additional shell syntax belongs in the parser and executor, with
+tests covering quoting, error paths, and interactions with redirection.
+
+The diagrams describe the intended module and data flow at the time of writing.
+When implementation boundaries or behavior change, update the relevant diagram
+and module table alongside the code so this document remains useful to maintainers.
+
