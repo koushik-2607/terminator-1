@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <cstdlib>
 #include "parser.hpp"
 #include "history.hpp"
 #include "autocomplete.hpp"
@@ -477,6 +478,102 @@ void testExecutionModes_ThreadAndProcess() {
 }
 
 // -----------------------------------------------------------------------------
+// Tasks 9-11: persistent/searchable history, file completion, script interpreter
+// -----------------------------------------------------------------------------
+void testTasks9to11() {
+    std::cout << "\n=== Testing Tasks 9-11: History, Completion, Scripts ===\n";
+    char home_template[] = "/tmp/terminator_task9_XXXXXX";
+    char* test_home = mkdtemp(home_template);
+    assert(test_home != nullptr);
+    const char* previous_home_ptr = getenv("HOME");
+    std::string previous_home = previous_home_ptr ? previous_home_ptr : "";
+    setenv("HOME", test_home, 1);
+    std::string history_path = std::string(test_home) + "/.bash_history";
+    {
+        std::ofstream history_file(history_path);
+        for (int i = 0; i < 10002; ++i) history_file << "seed" << i << '\n';
+    }
+    {
+        HistoryManager history(true, "/test_terminator_tasks_9_11");
+        TEST_ASSERT(history.size() == 10000, "History startup trims the file to its latest 10,000 entries");
+        TEST_ASSERT(history.get(0) == "seed2", "History retains the oldest entry within the 10,000-entry window");
+        history.add("prefix-alpha-tail");
+        TEST_ASSERT(history.size() == 10000 && history.get(9999) == "prefix-alpha-tail",
+                    "Appending at capacity evicts one old entry and retains the new command");
+        auto exact = history.search("prefix-alpha-tail");
+        TEST_ASSERT(exact.size() == 1 && exact[0] == "prefix-alpha-tail", "History search prefers the newest exact match");
+        history.add("prefix-beta-tail");
+        auto partial = history.search("prefix");
+        TEST_ASSERT(partial.size() == 2, "History search returns all commands tied for the longest substring");
+        TEST_ASSERT(history.search("zz").empty(), "History search rejects matches of two characters or fewer");
+    }
+    if (previous_home.empty()) unsetenv("HOME"); else setenv("HOME", previous_home.c_str(), 1);
+    unlink(history_path.c_str());
+    rmdir(test_home);
+
+    std::string completion_dir = "/tmp/terminator_task10_" + std::to_string(getpid());
+    mkdir(completion_dir.c_str(), 0777);
+    std::ofstream(completion_dir + "/abc.txt").close();
+    std::ofstream(completion_dir + "/abcd.txt").close();
+    std::ofstream(completion_dir + "/def.txt").close();
+    mkdir((completion_dir + "/dir").c_str(), 0777);
+    std::ofstream(completion_dir + "/dir/item").close();
+    auto one = Autocomplete::complete("unknown deTAIL", 10, completion_dir);
+    TEST_ASSERT(one.is_unique && one.prefix == "def.txt", "Completion uses the tab directory even for an unknown command");
+    auto many = Autocomplete::complete("unknown abc", 11, completion_dir);
+    TEST_ASSERT(many.candidates.size() == 2 && many.prefix == "abc", "Ambiguous files produce their common prefix");
+    auto nested = Autocomplete::complete("cmd dir/", 8, completion_dir);
+    TEST_ASSERT(nested.candidates.size() == 1 && nested.candidates[0] == "dir/item", "Relative directory prefixes resolve from tab cwd");
+    unlink((completion_dir + "/abc.txt").c_str()); unlink((completion_dir + "/abcd.txt").c_str());
+    unlink((completion_dir + "/def.txt").c_str()); unlink((completion_dir + "/dir/item").c_str());
+    rmdir((completion_dir + "/dir").c_str()); rmdir(completion_dir.c_str());
+
+    std::string script_path = "/tmp/terminator_task11_" + std::to_string(getpid()) + ".sh";
+    std::ofstream script(script_path);
+    script << "NAME=\"hello world\"\n"
+           << "if [ -f \"$1\" ]; then\n"
+           << "  if [ \"$2\" -gt 3 ]; then\n"
+           << "    echo \"ok:$NAME:$#\"\n"
+           << "  else\n"
+           << "    echo low\n"
+           << "  fi\n"
+           << "else\n"
+           << "  echo missing\n"
+           << "fi\n";
+    script.close();
+    int pfd[2]; assert(pipe(pfd) == 0); fcntl(pfd[0], F_SETFL, O_NONBLOCK);
+    std::string output;
+    ShellEngine shell(nullptr, [&](const std::string& s) { output += s; }, -1, pfd[1]);
+    shell.execute("bash " + script_path + " " + script_path + " 4");
+    char buf[1024]; ssize_t n;
+    while ((n = read(pfd[0], buf, sizeof(buf))) > 0) output.append(buf, n);
+    TEST_ASSERT(output.find("ok:hello world:2") != std::string::npos, "Script interpreter handles quoted variables, arguments, nested if, and file/numeric tests");
+
+    output.clear(); shell.execute(script_path + " " + script_path + " 2");
+    while ((n = read(pfd[0], buf, sizeof(buf))) > 0) output.append(buf, n);
+    TEST_ASSERT(output.find("low") != std::string::npos, "Executable .sh entry point interprets the script and passes arguments");
+    output.clear(); shell.execute("source " + script_path + " " + script_path + " 4");
+    while ((n = read(pfd[0], buf, sizeof(buf))) > 0) output.append(buf, n);
+    TEST_ASSERT(output.find("ok:hello world:2") != std::string::npos, "source entry point passes script arguments");
+
+    int other_pipe[2]; assert(pipe(other_pipe) == 0); fcntl(other_pipe[0], F_SETFL, O_NONBLOCK);
+    std::string other_output;
+    ShellEngine other_shell(nullptr, [&](const std::string& s) { other_output += s; }, -1, other_pipe[1]);
+    other_shell.execute("echo $NAME");
+    while ((n = read(other_pipe[0], buf, sizeof(buf))) > 0) other_output.append(buf, n);
+    TEST_ASSERT(other_output.find("hello") == std::string::npos, "Script variables stay isolated between shell instances in thread mode");
+    close(other_pipe[0]); close(other_pipe[1]);
+
+    std::ofstream invalid(script_path);
+    invalid << "echo SHOULD_NOT_RUN\nif [ -f missing ]; then\necho no\n";
+    invalid.close(); output.clear(); shell.execute("source " + script_path);
+    while ((n = read(pfd[0], buf, sizeof(buf))) > 0) output.append(buf, n);
+    TEST_ASSERT(output.find("syntax error") != std::string::npos && output.find("SHOULD_NOT_RUN") == std::string::npos,
+                "Malformed script is rejected before any command executes");
+    close(pfd[0]); close(pfd[1]); unlink(script_path.c_str());
+}
+
+// -----------------------------------------------------------------------------
 // Main Test Runner
 // -----------------------------------------------------------------------------
 int main() {
@@ -492,6 +589,7 @@ int main() {
     testTask8_SignalsAndJobs();
     testTask7_HotkeysAndConfig();
     testExecutionModes_ThreadAndProcess();
+    testTasks9to11();
 
     std::cout << "\n=================================================================\n";
     std::cout << "  TEST SUMMARY: " << g_test_passed << " PASSED, " << g_test_failed << " FAILED\n";

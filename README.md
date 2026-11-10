@@ -151,6 +151,20 @@ In process mode, the GUI runs in the parent process, and each new tab forks into
 - `fg`: Bring job to foreground.
 - `bg`: Resume stopped job in background.
 
+### Task 9: Searchable, Persistent History
+- Commands are shared across tabs and retained in `~/.bash_history` (up to 10,000 entries).
+- `history` displays the most recent 1,000 entries.
+- `Ctrl+R` prompts for a term, preferring its newest exact command match; otherwise it displays commands tied for the longest common substring when that substring is longer than two characters.
+
+### Task 10: File-name Completion
+- `Tab` completes file and directory names relative to the active tab's directory, preserving text after the cursor.
+- One match completes directly; multiple matches expand to their common prefix and show numbered choices that can be selected with `1`–`9`.
+
+### Task 11: Bash Script Interpreter
+- `source file.sh`, `bash file.sh`, and `./file.sh` execute through Terminator's interpreter.
+- Supports sequential commands, comments, assignments, `$NAME`, `$1`–`$9`, `$#`, `$?`, nested `if`/`elif`/`else`/`fi`, `[ ... ]` integer/string and file/directory tests, pipelines, redirection, substitutions, and script `exit`.
+- Loops and functions are not implemented.
+
 ---
 
 ## 6. Known Limitations

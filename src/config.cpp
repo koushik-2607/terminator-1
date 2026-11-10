@@ -1,26 +1,26 @@
-#include "config.hpp"
-#include <fstream>
-#include <iostream>
-#include <algorithm>
-#include <cctype>
+#include "config.hpp" // Declares ConfigManager and the key/action types used below.
+#include <fstream>    // Reads and creates the user's plain-text hotkey file.
+#include <iostream>   // Sends invalid-binding warnings to standard error.
+#include <algorithm>  // Provides transform for case-insensitive parsing.
+#include <cctype>     // Provides tolower for normalizing config spelling.
 
 namespace Terminator {
 
-    ConfigManager::ConfigManager() {
+    ConfigManager::ConfigManager() { // Construct defaults first so missing or bad user settings have a fallback.
         // Initialize with required default keybindings
-        setupDefaults();
+        setupDefaults(); // Populate the built-in keymaps before reading optional overrides.
 
-        const char* home = getenv("HOME");
-        if (home) {
-            config_path_ = std::string(home) + "/.terminatorrc";
+        const char* home = getenv("HOME"); // HOME is provided by the process environment and can be absent.
+        if (home) { // Prefer a per-user dotfile when the environment supplies a home directory.
+            config_path_ = std::string(home) + "/.terminatorrc"; // Store the complete path for later file operations and warnings.
         } else {
-            config_path_ = ".terminatorrc";
+            config_path_ = ".terminatorrc"; // Fall back to a file in the current directory.
         }
     }
 
     void ConfigManager::setupDefaults() {
-        key_to_action_.clear();
-        action_to_key_.clear();
+        key_to_action_.clear(); // Remove previous bindings so a reset cannot leave stale lookup entries.
+        action_to_key_.clear(); // Clear the reverse map at the same time to keep the two views consistent.
 
         // Task 7 Default Specifications:
         // <- / -> : Move within the line
@@ -32,50 +32,50 @@ namespace Terminator {
         // Ctrl+D : Exit the shell (close tab) / EOF
         // Ctrl+Shift+C / Ctrl+Shift+V : Copy / paste
 
-        auto bind = [this](KeySym sym, unsigned int mod, TerminalAction act) {
-            KeyCombo kc{sym, mod};
-            key_to_action_[kc] = act;
-            action_to_key_[act] = kc;
+        auto bind = [this](KeySym sym, unsigned int mod, TerminalAction act) { // Local helper captures this manager and records one binding in both maps.
+            KeyCombo kc{sym, mod}; // Build the composite key that includes both the X11 symbol and modifier bits.
+            key_to_action_[kc] = act; // Configure event-to-action lookup used by getAction().
+            action_to_key_[act] = kc; // Configure the reverse mapping for the same action.
         };
 
-        bind(XK_Left, 0, TerminalAction::MOVE_LEFT);
-        bind(XK_Right, 0, TerminalAction::MOVE_RIGHT);
-        bind(XK_a, ControlMask, TerminalAction::START_OF_LINE);
-        bind(XK_A, ControlMask, TerminalAction::START_OF_LINE);
-        bind(XK_e, ControlMask, TerminalAction::END_OF_LINE);
-        bind(XK_E, ControlMask, TerminalAction::END_OF_LINE);
-        bind(XK_Up, 0, TerminalAction::HISTORY_UP);
-        bind(XK_Down, 0, TerminalAction::HISTORY_DOWN);
-        bind(XK_u, ControlMask, TerminalAction::DELETE_TO_START);
-        bind(XK_U, ControlMask, TerminalAction::DELETE_TO_START);
-        bind(XK_k, ControlMask, TerminalAction::DELETE_TO_END);
-        bind(XK_K, ControlMask, TerminalAction::DELETE_TO_END);
-        bind(XK_w, ControlMask, TerminalAction::DELETE_PREV_WORD);
-        bind(XK_W, ControlMask, TerminalAction::DELETE_PREV_WORD);
-        bind(XK_l, ControlMask, TerminalAction::CLEAR_SCREEN);
-        bind(XK_L, ControlMask, TerminalAction::CLEAR_SCREEN);
-        bind(XK_d, ControlMask, TerminalAction::EXIT_TAB);
-        bind(XK_D, ControlMask, TerminalAction::EXIT_TAB);
-        bind(XK_c, ControlMask | ShiftMask, TerminalAction::COPY);
-        bind(XK_C, ControlMask | ShiftMask, TerminalAction::COPY);
-        bind(XK_v, ControlMask | ShiftMask, TerminalAction::PASTE);
-        bind(XK_V, ControlMask | ShiftMask, TerminalAction::PASTE);
+        bind(XK_Left, 0, TerminalAction::MOVE_LEFT); // Left arrow moves the edit cursor without changing text.
+        bind(XK_Right, 0, TerminalAction::MOVE_RIGHT); // Right arrow moves the edit cursor right.
+        bind(XK_a, ControlMask, TerminalAction::START_OF_LINE); // Ctrl+A jumps to the start of the input buffer.
+        bind(XK_A, ControlMask, TerminalAction::START_OF_LINE); // Accept the alternate uppercase X11 symbol too.
+        bind(XK_e, ControlMask, TerminalAction::END_OF_LINE); // Ctrl+E jumps to the end of the current line.
+        bind(XK_E, ControlMask, TerminalAction::END_OF_LINE); // Uppercase symbol variant for the same shortcut.
+        bind(XK_Up, 0, TerminalAction::HISTORY_UP); // Up arrow recalls an older shared command.
+        bind(XK_Down, 0, TerminalAction::HISTORY_DOWN); // Down arrow moves toward newer history or the saved draft.
+        bind(XK_u, ControlMask, TerminalAction::DELETE_TO_START); // Ctrl+U removes text before the cursor.
+        bind(XK_U, ControlMask, TerminalAction::DELETE_TO_START); // Uppercase symbol variant.
+        bind(XK_k, ControlMask, TerminalAction::DELETE_TO_END); // Ctrl+K removes text after the cursor.
+        bind(XK_K, ControlMask, TerminalAction::DELETE_TO_END); // Uppercase symbol variant.
+        bind(XK_w, ControlMask, TerminalAction::DELETE_PREV_WORD); // Ctrl+W removes the preceding word.
+        bind(XK_W, ControlMask, TerminalAction::DELETE_PREV_WORD); // Uppercase symbol variant.
+        bind(XK_l, ControlMask, TerminalAction::CLEAR_SCREEN); // Ctrl+L clears visible terminal scrollback.
+        bind(XK_L, ControlMask, TerminalAction::CLEAR_SCREEN); // Uppercase symbol variant.
+        bind(XK_d, ControlMask, TerminalAction::EXIT_TAB); // Ctrl+D closes an empty tab or deletes at the cursor.
+        bind(XK_D, ControlMask, TerminalAction::EXIT_TAB); // Uppercase symbol variant.
+        bind(XK_c, ControlMask | ShiftMask, TerminalAction::COPY); // Ctrl+Shift+C copies the current input to X11 selection storage.
+        bind(XK_C, ControlMask | ShiftMask, TerminalAction::COPY); // Uppercase symbol variant.
+        bind(XK_v, ControlMask | ShiftMask, TerminalAction::PASTE); // Ctrl+Shift+V requests text from the X11 clipboard owner.
+        bind(XK_V, ControlMask | ShiftMask, TerminalAction::PASTE); // Uppercase symbol variant.
 
         // Tab management shortcuts
-        bind(XK_t, ControlMask | ShiftMask, TerminalAction::NEW_TAB);
-        bind(XK_T, ControlMask | ShiftMask, TerminalAction::NEW_TAB);
-        bind(XK_w, ControlMask | ShiftMask, TerminalAction::CLOSE_TAB);
-        bind(XK_W, ControlMask | ShiftMask, TerminalAction::CLOSE_TAB);
-        bind(XK_Tab, ControlMask, TerminalAction::NEXT_TAB);
-        bind(XK_Tab, ControlMask | ShiftMask, TerminalAction::PREV_TAB);
-        bind(XK_ISO_Left_Tab, ControlMask, TerminalAction::PREV_TAB);
-        bind(XK_Page_Down, ControlMask, TerminalAction::NEXT_TAB);
-        bind(XK_Page_Up, ControlMask, TerminalAction::PREV_TAB);
+        bind(XK_t, ControlMask | ShiftMask, TerminalAction::NEW_TAB); // Ctrl+Shift+T creates another tab.
+        bind(XK_T, ControlMask | ShiftMask, TerminalAction::NEW_TAB); // Uppercase symbol variant.
+        bind(XK_w, ControlMask | ShiftMask, TerminalAction::CLOSE_TAB); // Ctrl+Shift+W closes the selected tab.
+        bind(XK_W, ControlMask | ShiftMask, TerminalAction::CLOSE_TAB); // Uppercase symbol variant.
+        bind(XK_Tab, ControlMask, TerminalAction::NEXT_TAB); // Ctrl+Tab selects the following tab.
+        bind(XK_Tab, ControlMask | ShiftMask, TerminalAction::PREV_TAB); // Ctrl+Shift+Tab selects the previous tab.
+        bind(XK_ISO_Left_Tab, ControlMask, TerminalAction::PREV_TAB); // Some keyboards report reverse Tab using ISO_Left_Tab.
+        bind(XK_Page_Down, ControlMask, TerminalAction::NEXT_TAB); // Ctrl+PageDown is an alternate next-tab shortcut.
+        bind(XK_Page_Up, ControlMask, TerminalAction::PREV_TAB); // Ctrl+PageUp is an alternate previous-tab shortcut.
     }
 
     void ConfigManager::writeDefaultConfigFile(const std::string& filepath) {
-        std::ofstream outfile(filepath);
-        if (!outfile.is_open()) return;
+        std::ofstream outfile(filepath); // Open/create the destination using the standard output-file stream.
+        if (!outfile.is_open()) return; // If permissions or the directory prevent writing, keep built-in defaults.
 
         outfile << "# ~/.terminatorrc - Custom hotkey configuration for Terminator\n";
         outfile << "# Format: action_name = Key_Combination\n";
@@ -108,47 +108,47 @@ namespace Terminator {
     }
 
     void ConfigManager::loadConfig() {
-        std::ifstream infile(config_path_);
-        if (!infile.is_open()) {
+        std::ifstream infile(config_path_); // Attempt to read the current user's bindings file.
+        if (!infile.is_open()) { // A missing file is normal on first run.
             // Write default config file if not present
-            writeDefaultConfigFile(config_path_);
-            return;
+            writeDefaultConfigFile(config_path_); // Give the user an editable example containing the default shortcuts.
+            return; // The in-memory defaults are already active, so no parsing is needed.
         }
 
         // Temporary maps to detect conflicts before committing changes
-        std::unordered_map<KeyCombo, TerminalAction, KeyComboHash> temp_key_to_act;
-        std::unordered_map<TerminalAction, KeyCombo> temp_act_to_key;
+        std::unordered_map<KeyCombo, TerminalAction, KeyComboHash> temp_key_to_act; // Stage parsed bindings so validation happens before updating live mappings.
+        std::unordered_map<TerminalAction, KeyCombo> temp_act_to_key; // Temporary reverse map kept in sync with the staged forward map.
 
-        std::string line;
-        int line_no = 0;
+        std::string line; // getline reuses this storage for each config line.
+        int line_no = 0; // Track physical line numbers so warnings identify the problem location.
 
-        while (std::getline(infile, line)) {
-            line_no++;
-            line = trim(line);
-            if (line.empty() || line[0] == '#') continue;
+        while (std::getline(infile, line)) { // Read config records until EOF or a stream error.
+            line_no++; // Increment before parsing so the first file line is reported as line one.
+            line = trim(line); // Ignore surrounding whitespace while preserving the key's internal spelling.
+            if (line.empty() || line[0] == '#') continue; // Blank and comment lines do not define bindings.
 
-            size_t eq_pos = line.find('=');
-            if (eq_pos == std::string::npos) continue;
+            size_t eq_pos = line.find('='); // The format separates action name from key combo with an equals sign.
+            if (eq_pos == std::string::npos) continue; // Silently ignore malformed lines that have no assignment separator.
 
-            std::string action_str = trim(line.substr(0, eq_pos));
-            std::string key_str = trim(line.substr(eq_pos + 1));
+            std::string action_str = trim(line.substr(0, eq_pos)); // Extract and normalize the left-hand action field.
+            std::string key_str = trim(line.substr(eq_pos + 1)); // Extract the key combination after the separator.
 
-            TerminalAction action = parseActionName(action_str);
-            if (action == TerminalAction::NONE) {
+            TerminalAction action = parseActionName(action_str); // Convert a supported action name into the enum.
+            if (action == TerminalAction::NONE) { // NONE signals that parsing found no recognized action.
                 std::cerr << "Config Warning [" << config_path_ << ":" << line_no 
                           << "]: Unknown action '" << action_str << "'\n";
                 continue;
             }
 
-            KeyCombo combo;
-            if (!parseKeyCombo(key_str, combo)) {
+            KeyCombo combo; // Output object filled by parseKeyCombo when the textual key is valid.
+            if (!parseKeyCombo(key_str, combo)) { // Invalid spelling or modifier prevents this binding from being used.
                 std::cerr << "Config Warning [" << config_path_ << ":" << line_no 
                           << "]: Invalid key combination '" << key_str << "'\n";
                 continue;
             }
 
             // Check for key conflicts
-            if (temp_key_to_act.find(combo) != temp_key_to_act.end()) {
+            if (temp_key_to_act.find(combo) != temp_key_to_act.end()) { // A key cannot invoke two distinct actions in this configuration.
                 std::cerr << "Config Conflict [" << config_path_ << ":" << line_no 
                           << "]: Key combination '" << key_str 
                           << "' already assigned to '" 
@@ -156,53 +156,53 @@ namespace Terminator {
                 continue;
             }
 
-            temp_key_to_act[combo] = action;
-            temp_act_to_key[action] = combo;
+            temp_key_to_act[combo] = action; // Stage the forward association after validation succeeds.
+            temp_act_to_key[action] = combo; // Stage its reverse association as well.
 
             // Also support lowercase/uppercase variant for letters
-            if (combo.keysym >= XK_A && combo.keysym <= XK_Z) {
-                KeyCombo lowerCombo = combo;
-                lowerCombo.keysym = combo.keysym + (XK_a - XK_A);
-                temp_key_to_act[lowerCombo] = action;
-            } else if (combo.keysym >= XK_a && combo.keysym <= XK_z) {
-                KeyCombo upperCombo = combo;
-                upperCombo.keysym = combo.keysym - (XK_a - XK_A);
-                temp_key_to_act[upperCombo] = action;
+            if (combo.keysym >= XK_A && combo.keysym <= XK_Z) { // X11 uses separate key symbols for alphabetic cases.
+                KeyCombo lowerCombo = combo; // Copy all modifiers while changing only the letter case.
+                lowerCombo.keysym = combo.keysym + (XK_a - XK_A); // Offset between uppercase and lowercase X11 symbols.
+                temp_key_to_act[lowerCombo] = action; // Make either case invoke this same action.
+            } else if (combo.keysym >= XK_a && combo.keysym <= XK_z) { // Also handle configs that spell the key lowercase.
+                KeyCombo upperCombo = combo; // Copy the combo so modifiers remain unchanged.
+                upperCombo.keysym = combo.keysym - (XK_a - XK_A); // Convert its symbol to uppercase by the same fixed offset.
+                temp_key_to_act[upperCombo] = action; // Add the uppercase variant to event lookup.
             }
         }
 
         // If configuration loaded without fatal errors, apply valid bindings
-        if (!temp_key_to_act.empty()) {
-            for (const auto& pair : temp_key_to_act) {
-                key_to_action_[pair.first] = pair.second;
-                action_to_key_[pair.second] = pair.first;
+        if (!temp_key_to_act.empty()) { // Preserve built-in defaults if the file supplied no valid bindings.
+            for (const auto& pair : temp_key_to_act) { // Merge each validated custom key into the live map.
+                key_to_action_[pair.first] = pair.second; // Later custom settings override the same default key.
+                action_to_key_[pair.second] = pair.first; // Keep the reverse lookup synchronized with the applied binding.
             }
         }
     }
 
     TerminalAction ConfigManager::getAction(KeySym keysym, unsigned int state) const {
         // Strip out LockMask (Caps Lock), NumLock, etc. Keep only Ctrl, Shift, Mod1 (Alt)
-        unsigned int clean_state = state & (ControlMask | ShiftMask | Mod1Mask);
+        unsigned int clean_state = state & (ControlMask | ShiftMask | Mod1Mask); // Ignore Caps Lock and other state bits that do not define configured shortcuts.
 
-        KeyCombo combo{keysym, clean_state};
-        auto it = key_to_action_.find(combo);
-        if (it != key_to_action_.end()) {
-            return it->second;
+        KeyCombo combo{keysym, clean_state}; // Match on the key plus only the meaningful modifier bits.
+        auto it = key_to_action_.find(combo); // Hash lookup avoids scanning every configured binding.
+        if (it != key_to_action_.end()) { // A present iterator represents a configured shortcut.
+            return it->second; // Return the action the GUI should perform.
         }
-        return TerminalAction::NONE;
+        return TerminalAction::NONE; // Unknown key combinations are left for normal text-input handling.
     }
 
     bool ConfigManager::parseKeyCombo(const std::string& str, KeyCombo& out) {
-        std::vector<std::string> parts = split(str, '+');
-        if (parts.empty()) return false;
+        std::vector<std::string> parts = split(str, '+'); // Split modifier names and final key, for example Ctrl+Shift+T.
+        if (parts.empty()) return false; // No token means there is no key to parse.
 
-        unsigned int mods = 0;
-        KeySym sym = 0;
+        unsigned int mods = 0; // Accumulate the X11 modifier mask from tokens before the final key.
+        KeySym sym = 0; // Zero is used as the invalid/unset sentinel until a key name is recognized.
 
-        for (size_t i = 0; i < parts.size(); ++i) {
-            std::string part = trim(parts[i]);
-            std::string part_lower = part;
-            std::transform(part_lower.begin(), part_lower.end(), part_lower.begin(), ::tolower);
+        for (size_t i = 0; i < parts.size(); ++i) { // Parse each plus-separated token in order.
+            std::string part = trim(parts[i]); // Remove whitespace around this modifier or key name.
+            std::string part_lower = part; // Keep the original spelling for case-sensitive single-letter conversion below.
+            std::transform(part_lower.begin(), part_lower.end(), part_lower.begin(), ::tolower); // Normalize names like CTRL and Left.
 
             if (i == parts.size() - 1) {
                 // The last element is the key name
@@ -222,7 +222,7 @@ namespace Terminator {
                     else sym = c;
                 } else {
                     sym = XStringToKeysym(part.c_str());
-                    if (sym == NoSymbol) return false;
+                    if (sym == NoSymbol) return false; // XStringToKeysym could not map the textual key name to an X11 symbol.
                 }
             } else {
                 // Modifiers
@@ -233,21 +233,21 @@ namespace Terminator {
                 } else if (part_lower == "alt" || part_lower == "mod1") {
                     mods |= Mod1Mask;
                 } else {
-                    return false;
+                    return false; // Reject unknown modifier names instead of silently binding the wrong key.
                 }
             }
         }
 
-        if (sym == 0) return false;
+        if (sym == 0) return false; // Every valid combo must have a recognized nonzero KeySym.
 
-        out.keysym = sym;
-        out.modifiers = mods;
-        return true;
+        out.keysym = sym; // Store the parsed X11 key code in the caller's output structure.
+        out.modifiers = mods; // Store the combined Control/Shift/Alt bitmask beside it.
+        return true; // Report that both the key and all modifiers parsed successfully.
     }
 
     TerminalAction ConfigManager::parseActionName(const std::string& name) {
-        std::string n = trim(name);
-        std::transform(n.begin(), n.end(), n.begin(), ::tolower);
+        std::string n = trim(name); // Copy before normalization so the caller's original string remains unchanged.
+        std::transform(n.begin(), n.end(), n.begin(), ::tolower); // Make action-name matching case-insensitive.
 
         if (n == "move_left") return TerminalAction::MOVE_LEFT;
         if (n == "move_right") return TerminalAction::MOVE_RIGHT;
@@ -267,11 +267,11 @@ namespace Terminator {
         if (n == "next_tab") return TerminalAction::NEXT_TAB;
         if (n == "prev_tab") return TerminalAction::PREV_TAB;
 
-        return TerminalAction::NONE;
+        return TerminalAction::NONE; // Unknown action names are rejected by loadConfig().
     }
 
     std::string ConfigManager::actionToString(TerminalAction action) {
-        switch (action) {
+        switch (action) { // Map every enum value to its canonical config spelling.
             case TerminalAction::MOVE_LEFT: return "move_left";
             case TerminalAction::MOVE_RIGHT: return "move_right";
             case TerminalAction::START_OF_LINE: return "line_start";
@@ -289,8 +289,9 @@ namespace Terminator {
             case TerminalAction::CLOSE_TAB: return "close_tab";
             case TerminalAction::NEXT_TAB: return "next_tab";
             case TerminalAction::PREV_TAB: return "prev_tab";
-            default: return "none";
+            default: return "none"; // Provide a printable fallback for NONE or an unexpected enum value.
         }
     }
 
 } // namespace Terminator
+// EOF

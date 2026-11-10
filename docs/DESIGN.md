@@ -159,3 +159,9 @@ External commands run in a child created with `fork()` + `execvp()`. The shell w
 - **Terminator Resilience**: Terminator never terminates upon `Ctrl+C` or `Ctrl+Z`. Only the foreground process group is affected.
 - **Job Control Table**: `JobManager` tracks jobs by PGID, child PIDs, command text, and state (`RUNNING`, `STOPPED`). Updates non-blockingly via `waitpid(-1, &status, WNOHANG | WUNTRACED | WCONTINUED)`.
 
+## 9. Searchable History, Completion, and Scripts
+
+- The shared history segment holds the latest 10,000 entries. The parent initializes it from `~/.bash_history`; each accepted command updates that file while holding the process-shared semaphore. `history` limits output to the newest 1,000 entries. Ctrl+R collects a search term, selects the newest exact match, or displays entries tied for the longest common substring (minimum length three).
+- File completion scans the active tab's working directory, expands the common prefix, and prints numbered alternatives when ambiguous. The GUI keeps the untouched suffix of the input line and accepts a numbered choice.
+- Script entry points (`source`, `bash file`, and `./file.sh`) use the internal command executor. The interpreter validates balanced `if`/`fi` blocks before execution, then handles nested conditionals, assignments, positional parameters, file/directory and comparison tests, and `exit`. The parser/executor supplies command substitutions, pipes, and redirections. Loops and functions are outside the required subset.
+

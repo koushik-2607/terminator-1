@@ -1,8 +1,8 @@
-#include "parser.hpp"
-#include <sstream>
-#include <cctype>
-#include <stack>
-#include <glob.h>
+#include "parser.hpp" // Declares shell syntax structures and Parser operations.
+#include <sstream> // Provides string streams used to process command text.
+#include <cctype> // Provides character tests for whitespace, quoting, and variable names.
+#include <stack> // Supports nested syntactic constructs during scanning.
+#include <glob.h> // POSIX wildcard expansion API for command arguments.
 
 namespace Terminator {
 
@@ -16,47 +16,47 @@ namespace Terminator {
      * 4. Unclosed $(...) parenthesis nesting
      * 5. Unclosed backtick (`)
      */
-    bool Parser::isInputIncomplete(const std::string& line) {
-        if (line.empty()) return false;
+    bool Parser::isInputIncomplete(const std::string& line) { // GUI calls this after Enter to decide whether to show a continuation prompt.
+        if (line.empty()) return false; // Empty input contains no unfinished syntax.
 
-        bool in_single_quote = false;
-        bool in_double_quote = false;
-        bool in_backtick = false;
-        int subshell_depth = 0;
-        bool escaped = false;
+        bool in_single_quote = false; // Single-quoted content is literal until its closing apostrophe.
+        bool in_double_quote = false; // Double quotes allow expansions but must still be balanced.
+        bool in_backtick = false; // Tracks an unfinished legacy command substitution.
+        int subshell_depth = 0; // Counts nested $(...) pairs that remain open.
+        bool escaped = false; // Records that a backslash protects the next input byte.
 
-        for (size_t i = 0; i < line.length(); ++i) {
-            char c = line[i];
+        for (size_t i = 0; i < line.length(); ++i) { // Scan characters sequentially while updating quote/escape state.
+            char c = line[i]; // Current byte of the accumulated command line.
 
             if (escaped) {
-                escaped = false;
+                escaped = false; // The current byte consumed the preceding escape.
                 continue;
             }
 
             if (c == '\\' && !in_single_quote) {
-                escaped = true;
+                escaped = true; // Treat the following byte literally.
                 continue;
             }
 
             if (c == '\'' && !in_double_quote && !in_backtick) {
-                in_single_quote = !in_single_quote;
+                in_single_quote = !in_single_quote; // Toggle only when not inside double quotes or backticks.
             } else if (c == '"' && !in_single_quote) {
-                in_double_quote = !in_double_quote;
+                in_double_quote = !in_double_quote; // Toggle only outside single quotes.
             } else if (c == '`' && !in_single_quote) {
-                in_backtick = !in_backtick;
+                in_backtick = !in_backtick; // Toggle backtick substitution state outside single quotes.
             } else if (c == '$' && !in_single_quote && i + 1 < line.length() && line[i + 1] == '(') {
-                subshell_depth++;
+                subshell_depth++; // Record a nested command-substitution opening.
                 i++; // Skip '('
             } else if (c == ')' && !in_single_quote && subshell_depth > 0) {
-                subshell_depth--;
+                subshell_depth--; // A closing parenthesis ends one active substitution level.
             }
         }
 
         // If line ends with an unescaped backslash, it is incomplete
-        if (escaped) return true;
+        if (escaped) return true; // A final backslash needs another line to provide its escaped character.
 
         // If any quotes or subshells are open, it is incomplete
-        return in_single_quote || in_double_quote || in_backtick || (subshell_depth > 0);
+        return in_single_quote || in_double_quote || in_backtick || (subshell_depth > 0); // Any unmatched opener means the command needs more input.
     }
 
     /**
@@ -169,44 +169,61 @@ namespace Terminator {
      * Double quotes: expands $VAR.
      * Unquoted: expands $VAR.
      */
-    std::string Parser::expandVariables(const std::string& input, int last_exit_status) {
-        std::string result;
-        bool in_single_quote = false;
-        bool in_double_quote = false;
-        bool escaped = false;
+    std::string Parser::expandVariables(const std::string& input, int last_exit_status, const VariableMap* variables) { // Expand shell parameters while retaining quote syntax for tokenization.
+        std::string result; // Receives original characters and expanded values.
+        bool in_single_quote = false; // Prevent parameter expansion in single-quoted text.
+        bool in_double_quote = false; // Permit expansion inside double quotes.
+        bool escaped = false; // Protect an escaped dollar sign from expansion.
 
-        for (size_t i = 0; i < input.length(); ++i) {
-            char c = input[i];
+        for (size_t i = 0; i < input.length(); ++i) { // Walk the command and maintain quote context.
+            char c = input[i]; // Current input byte.
 
             if (escaped) {
-                result += c;
-                escaped = false;
+                result += c; // Preserve escaped content in the resulting command string.
+                escaped = false; // The current character has consumed the escape.
                 continue;
             }
 
             if (c == '\\' && !in_single_quote) {
-                escaped = true;
-                result += c;
+                escaped = true; // The next byte must not be interpreted as an expansion marker.
+                result += c; // Retain the backslash for the tokenizer's later escape handling.
                 continue;
             }
 
             if (c == '\'' && !in_double_quote) {
-                in_single_quote = !in_single_quote;
-                result += c;
+                in_single_quote = !in_single_quote; // Toggle single-quoted literal mode.
+                result += c; // Keep delimiters until tokenization removes them.
                 continue;
             }
 
             if (c == '"' && !in_single_quote) {
-                in_double_quote = !in_double_quote;
-                result += c;
+                in_double_quote = !in_double_quote; // Toggle double-quoted mode, unless currently in a single-quoted region.
+                result += c; // Preserve the quote syntax for later word splitting.
                 continue;
             }
 
             // Perform expansion if outside single quotes
             if (c == '$' && !in_single_quote && i + 1 < input.length()) {
+                if (std::isdigit(static_cast<unsigned char>(input[i + 1]))) { // Positional parameter names may contain one or more digits.
+                    size_t j = i + 1;
+                    while (j < input.size() && std::isdigit(static_cast<unsigned char>(input[j]))) ++j;
+                    std::string key = input.substr(i + 1, j - i - 1);
+                    auto local = variables ? variables->find(key) : VariableMap::const_iterator{};
+                    if (variables && local != variables->end()) result += local->second; // Prefer this tab's variable over process-global state.
+                    else if (const char* value = getenv(key.c_str())) result += value; // Fall back to inherited environment variables.
+                    i = j - 1;
+                    continue;
+                }
+                if (input[i + 1] == '#') { // $# reports the active script's number of positional arguments.
+                    auto local = variables ? variables->find("#") : VariableMap::const_iterator{};
+                    if (variables && local != variables->end()) result += local->second;
+                    else if (const char* value = getenv("#")) result += value;
+                    ++i;
+                    continue;
+                }
                 // Check for $?
                 if (input[i + 1] == '?') {
-                    result += std::to_string(last_exit_status);
+                    result += std::to_string(last_exit_status); // Replace $? with the last command's numeric exit code.
                     i++;
                     continue;
                 }
@@ -216,8 +233,9 @@ namespace Terminator {
                     size_t close_brace = input.find('}', i + 2);
                     if (close_brace != std::string::npos) {
                         std::string var_name = input.substr(i + 2, close_brace - (i + 2));
-                        const char* val = getenv(var_name.c_str());
-                        if (val) result += val;
+                        auto local = variables ? variables->find(var_name) : VariableMap::const_iterator{};
+                        if (variables && local != variables->end()) result += local->second;
+                        else if (const char* val = getenv(var_name.c_str())) result += val;
                         i = close_brace;
                         continue;
                     }
@@ -230,8 +248,9 @@ namespace Terminator {
                         j++;
                     }
                     std::string var_name = input.substr(i + 1, j - (i + 1));
-                    const char* val = getenv(var_name.c_str());
-                    if (val) result += val;
+                    auto local = variables ? variables->find(var_name) : VariableMap::const_iterator{};
+                    if (variables && local != variables->end()) result += local->second;
+                    else if (const char* val = getenv(var_name.c_str())) result += val;
                     i = j - 1;
                     continue;
                 }
@@ -381,7 +400,8 @@ namespace Terminator {
     /**
      * Parses a command line into a Pipeline.
      */
-    Pipeline Parser::parsePipeline(const std::string& input, int last_exit_status, SubshellRunner runner) {
+    Pipeline Parser::parsePipeline(const std::string& input, int last_exit_status, SubshellRunner runner,
+                                   const VariableMap* variables) {
         Pipeline pipeline;
         pipeline.raw_command = input;
 
@@ -419,7 +439,7 @@ namespace Terminator {
         std::string substituted = processSubstitutions(cleaned, runner);
 
         // Step 3: Expand $VAR and $?
-        std::string expanded = expandVariables(substituted, last_exit_status);
+        std::string expanded = expandVariables(substituted, last_exit_status, variables);
 
         // Step 4: Check for background execution '&' at the end
         std::string trimmed = trim(expanded);
@@ -523,3 +543,4 @@ namespace Terminator {
     }
 
 } // namespace Terminator
+// EOF
